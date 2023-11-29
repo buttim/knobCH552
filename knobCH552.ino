@@ -6,7 +6,7 @@
 #include <SoftI2C.h>
 #include <WS2812.h>
 
-const int BUTTON=31, LED=30, SCL=10, SDA=11, TOUCH1=15, TOUCH2=16, TOUCH3=17, DIRECTION=34, WS2812_DATA=33, 
+const int BUTTON=31, LED=30, SCL=35, SDA=34, TOUCH1=15, TOUCH2=16, TOUCH3=17, WS2812_DATA=33,
   AMS5600_ADDR=0x36, FACTOR=32;
 
 #define NUM_LEDS 16
@@ -26,19 +26,26 @@ const int BUTTON=31, LED=30, SCL=10, SDA=11, TOUCH1=15, TOUCH2=16, TOUCH3=17, DI
   #define USBSerial_println(x) ;
 #else                         // for debugging
   #define USBInit() ;
-  #define Consumer_press(x) ;
+  #define Consumer_press(x) USBSerial_println(x)
   #define Consumer_release(x) ;
+  #define Consumer_releaseAll() ;
+  #define MEDIA_NEXT 1
+  #define MEDIA_PREV -1
+  #define MEDIA_PLAY_PAUSE 0
+  #define MEDIA_VOL_DOWN -10
+  #define MEDIA_VOL_UP 10
 #endif
 
+//macros for AS5600 register read/write
 #define REGBR(name,addr) uint8_t read##name() { return readReg(addr,false); }
 #define REGBW(name,addr) void write##name(uint8_t data) { writeReg(addr,data,false); }
 #define REGWR(name,addr) uint16_t read##name() { return readReg(addr,true); }
 #define REGWW(name,addr) void write##name(uint16_t data) { writeReg(addr,data,true); }
 #define REGW(name,addr) REGWR(name,addr) REGWW(name,addr)
 
-uint16_t startAngle=0, last=0, tLastKeyPress=0;
+uint16_t startAngle=0, last=0, lastKey=0;
+uint64_t tLastKeyPress=0;
 __xdata uint8_t ledData[NUM_BYTES];
-
 
 uint16_t readReg(uint8_t reg, bool readWord) {
   uint8_t ack=0, data1=0, data2;
@@ -129,8 +136,6 @@ void setup() {
   TouchKey_SetTouchThreshold(1500);
   TouchKey_SetReleaseThreshold(1450);
 
-  delay(5);
-
   pinMode(WS2812_DATA, OUTPUT);
 
   scl_pin = SCL;
@@ -139,7 +144,6 @@ void setup() {
 
   pinMode(LED, OUTPUT);
   pinMode(BUTTON, INPUT_PULLUP);
-  digitalWrite(DIRECTION,0);            //clockwise increment
 
   for (int i = 0; i < 3; i++) {
     digitalWrite(LED, HIGH);
@@ -151,57 +155,75 @@ void setup() {
   startAngle=readAngle()-FACTOR/2;
   writeConf(3<<2); //hysteresis (?)
 
-  /*for (uint8_t i = 0; i < NUM_LEDS; i++) {
-    set_pixel_for_RGB_LED(ledData, NUM_LEDS-i-1, 0, 0, 4);
+  for (int j=0;j<3;j++) {
+    for (uint8_t i = 0; i < NUM_LEDS; i++)
+      set_pixel_for_GRB_LED(ledData, i, j==0?16:0, j==1?16:0, j==2?16:0);
     neopixel_show_P3_3(ledData, NUM_BYTES);
-    delay(50);
-  }*/
+    delay(800);
+  }
 }
 
 void pressKey(int key) {
-    Consumer_press(key);
-    tLastKeyPress=millis();
+  lastKey=key;
+  Consumer_press(key);
+  tLastKeyPress=millis();
 }
+
+uint8_t r, g, b, touchResult,i;
+uint16_t timeout,sum, angle, curr;
 
 void loop() {
   //TODO: aggiungere effetti LED
-  uint16_t t=millis();
+  uint64_t t=millis();
 
-  if (tLastKeyPress!=0 && t-tLastKeyPress>50) {
-    tLastKeyPress=0;
-    Consumer_releaseAll();
+  if (tLastKeyPress==0 || t-tLastKeyPress>250) {
+    TouchKey_Process();
+    touchResult=TouchKey_Get();
+    digitalWrite(LED, touchResult ? HIGH : LOW);
+    if (touchResult) {
+      r=g=b=0;
+      if (touchResult&(1<<3)) {
+        pressKey(MEDIA_NEXT);
+        r=16;
+      }
+      if (touchResult&(1<<4)) {
+        pressKey(MEDIA_PLAY_PAUSE);
+        g=16;
+      }
+      if (touchResult&(1<<5)) {
+        pressKey(MEDIA_PREV);
+        b=16;
+      }
+      for (i = 0; i < NUM_LEDS; i++)
+        set_pixel_for_GRB_LED(ledData, i, r, g, b);
+      neopixel_show_P3_3(ledData, NUM_BYTES);
+      do  //wait for release
+        TouchKey_Process();
+      while ((touchResult & TouchKey_Get())!=0);
+    }
   }
-  TouchKey_Process();
-  uint8_t touchResult=TouchKey_Get();
-  digitalWrite(LED, touchResult ? HIGH : LOW);
-  if (touchResult) {
-    uint8_t r=0, g=0, b=0;
-    if (touchResult&(1<<3)) {
-      pressKey(MEDIA_NEXT);
-      r=16;
-    }
-    if (touchResult&(1<<4)) {
-      pressKey(MEDIA_PLAY_PAUSE);
-      g=16;
-    }
-    if (touchResult&(1<<5)) {
-      pressKey(MEDIA_PREV);
-      b=16;
-    }
-    for (uint8_t i = 0; i < NUM_LEDS; i++)
-      set_pixel_for_BGR_LED(ledData, i, r, g, b);
-    neopixel_show_P3_3(ledData, NUM_BYTES);
-  }
-    
-  uint16_t sum=0;
 
-  for (int i=0;i<10;i++)
+  if (tLastKeyPress!=0) {
+    timeout=250;
+    if (lastKey==MEDIA_VOL_UP || lastKey==MEDIA_VOL_DOWN) timeout=50;
+    if (t-tLastKeyPress>timeout) {
+      tLastKeyPress=0;
+      Consumer_releaseAll();
+    }
+  }
+
+  sum=0;
+  for (i=0;i<10;i++)
     sum+=readAngle();
-  uint16_t angle=(sum/10-startAngle+2048)%4096;
-  if (angle==0xFFFFU)
-    while (true);
+  angle=(sum/10-startAngle+2048)%4096;
+  if (angle==0xFFFFU) {
+    while (digitalRead(SDA)==LOW || digitalRead(SCL)==LOW)
+      ;
+    I2CInit();
+    return;
+  }
 
-  uint16_t curr=angle/FACTOR;
+  curr=angle/FACTOR;
   if (curr>last)
     pressKey(MEDIA_VOL_UP);
   else if (curr<last)
