@@ -43,8 +43,10 @@ const int BUTTON=31, LED=30, SCL=35, SDA=34, TOUCH1=15, TOUCH2=16, TOUCH3=17, WS
 #define REGWW(name,addr) void write##name(uint16_t data) { writeReg(addr,data,true); }
 #define REGW(name,addr) REGWR(name,addr) REGWW(name,addr)
 
-uint16_t startAngle=0, last=0, lastKey=0;
-uint64_t tLastKeyPress=0;
+uint8_t r, g, b, touchResult,i;
+uint16_t startAngle=0, last=0, lastKey=0,
+   timeout, sum, angle, curr;
+uint64_t tLastKeyPress=0, tLastLedEffect=0;
 __xdata uint8_t ledData[NUM_BYTES];
 
 uint16_t readReg(uint8_t reg, bool readWord) {
@@ -133,8 +135,8 @@ void setup() {
   USBInit();
 
   TouchKey_begin(1<<3 | 1<<4 | 1<<5);  //enable touch on P1.5, P1.6, P1.7
-  TouchKey_SetTouchThreshold(1500);
-  TouchKey_SetReleaseThreshold(1450);
+  TouchKey_SetTouchThreshold(2000);
+  TouchKey_SetReleaseThreshold(1900);
 
   pinMode(WS2812_DATA, OUTPUT);
 
@@ -147,7 +149,7 @@ void setup() {
 
   for (int i = 0; i < 3; i++) {
     digitalWrite(LED, HIGH);
-    delay(100);
+    delay(10);
     digitalWrite(LED, LOW);
     delay(100);
   }
@@ -159,7 +161,7 @@ void setup() {
     for (uint8_t i = 0; i < NUM_LEDS; i++)
       set_pixel_for_GRB_LED(ledData, i, j==0?16:0, j==1?16:0, j==2?16:0);
     neopixel_show_P3_3(ledData, NUM_BYTES);
-    delay(800);
+    delay(200);
   }
 }
 
@@ -169,12 +171,15 @@ void pressKey(int key) {
   tLastKeyPress=millis();
 }
 
-uint8_t r, g, b, touchResult,i;
-uint16_t timeout,sum, angle, curr;
 
 void loop() {
-  //TODO: aggiungere effetti LED
   uint64_t t=millis();
+
+  if (tLastLedEffect!=0 && t -tLastLedEffect>2000) {
+    for (uint8_t i = 0; i < NUM_LEDS; i++)
+      set_pixel_for_GRB_LED(ledData, i, 0, 0, 16);
+    neopixel_show_P3_3(ledData, NUM_BYTES);
+  }
 
   if (tLastKeyPress==0 || t-tLastKeyPress>250) {
     TouchKey_Process();
@@ -184,19 +189,20 @@ void loop() {
       r=g=b=0;
       if (touchResult&(1<<3)) {
         pressKey(MEDIA_NEXT);
-        r=16;
+        r=b=16;
       }
       if (touchResult&(1<<4)) {
         pressKey(MEDIA_PLAY_PAUSE);
-        g=16;
+        r=g=b=16;
       }
       if (touchResult&(1<<5)) {
         pressKey(MEDIA_PREV);
-        b=16;
+        r=b=16;
       }
       for (i = 0; i < NUM_LEDS; i++)
         set_pixel_for_GRB_LED(ledData, i, r, g, b);
       neopixel_show_P3_3(ledData, NUM_BYTES);
+      tLastLedEffect=t;
       do  //wait for release
         TouchKey_Process();
       while ((touchResult & TouchKey_Get())!=0);
@@ -224,9 +230,19 @@ void loop() {
   }
 
   curr=angle/FACTOR;
-  if (curr>last)
+  if (curr>last) {
     pressKey(MEDIA_VOL_UP);
-  else if (curr<last)
+    for (uint8_t i = 0; i < NUM_LEDS; i++)
+      set_pixel_for_GRB_LED(ledData, i, 32, 0, 0);
+    neopixel_show_P3_3(ledData, NUM_BYTES);
+    tLastLedEffect=t;
+  }
+  else if (curr<last) {
     pressKey(MEDIA_VOL_DOWN);
+    for (uint8_t i = 0; i < NUM_LEDS; i++)
+      set_pixel_for_GRB_LED(ledData, i, 0, 16, 16);
+    neopixel_show_P3_3(ledData, NUM_BYTES);
+    tLastLedEffect=t;
+  }
   last=curr;
 }
